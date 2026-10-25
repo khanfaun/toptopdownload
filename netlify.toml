@@ -1,0 +1,15 @@
+[build]
+  command = "node scripts/build.mjs"
+  publish = "dist"
+[build.environment]
+  NODE_VERSION = "22"
+[[edge_functions]]
+  function = "api"
+  path = "/api/*"
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

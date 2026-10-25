@@ -1,4 +1,4 @@
-import {videoKey,summarize,mergeQueue,verifyMP4,hashFile,safeFolder} from './shared.mjs';
+import {videoKey,summarize,mergeQueue,verifyMP4,hashFile} from './shared.mjs';
 const $=id=>document.getElementById(id);
 const elements={url:$('url'),find:$('find'),paste:$('paste'),folder:$('choose-folder'),folderName:$('folder-name'),selectAccount:$('select-account'),selectPage:$('select-page'),deselectPage:$('deselect-page'),previous:$('previous'),next:$('next'),download:$('download'),resume:$('resume'),pause:$('pause'),progress:$('progress'),overall:$('overall'),current:$('current'),status:$('status')};
 const state={pages:[],page:0,username:'',type:'',selected:new Map(),job:[],folder:null,busy:false,operation:'',controller:null};
@@ -7,6 +7,7 @@ let db=null,saveTimer=null,toastTimer=null;
 function log(text){const output=$('logs');output.textContent=(`${output.textContent}\n[${new Date().toLocaleTimeString('vi-VN')}] ${text}`).split('\n').slice(-150).join('\n');output.scrollTop=output.scrollHeight;}
 function status(text){elements.status.textContent=text;}
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
+function setFolder(folder){state.folder=folder;$('folder-name').textContent=folder?folder.name:'Tải xuống của trình duyệt';$('folder-help').textContent=folder?'Video sẽ được lưu thẳng vào thư mục này.':'Video được tải vào mục Tải xuống theo cài đặt trình duyệt. Nhấn Ctrl+J để xem.';}
 function openDB(){return new Promise((resolve,reject)=>{const request=indexedDB.open('tiktok-saver',1);request.onupgradeneeded=()=>request.result.createObjectStore('records');request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
 function read(key){if(!db)return Promise.resolve(null);return new Promise((resolve,reject)=>{const request=db.transaction('records').objectStore('records').get(key);request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);});}
 function write(key,value){if(!db)return Promise.resolve();return new Promise((resolve,reject)=>{const transaction=db.transaction('records','readwrite');transaction.objectStore('records').put(value,key);transaction.oncomplete=resolve;transaction.onerror=()=>reject(transaction.error);transaction.onabort=()=>reject(transaction.error);});}
@@ -76,15 +77,16 @@ async function selectAccount(){if(state.busy||!state.pages.length)return;
   elements.current.textContent=`Tất cả ${state.pages.length} trang`;
   status(`Đã chọn toàn bộ ${state.selected.size} video. Bấm Tải ${state.selected.size} video để lưu tất cả.`);log(`Đã đọc toàn bộ ${state.pages.length} trang, chọn ${state.selected.size} video duy nhất.`);
   }catch(error){status(signal.aborted?'Đã dừng tìm thêm. Các video tìm được vẫn được chọn. Bấm Chọn toàn bộ tài khoản để tìm tiếp.':errorMessage(error));elements.overall.textContent=`Đã chọn ${state.selected.size} video · Chưa đọc xong tất cả các trang`;elements.progress.value=0;}finally{finishOperation();}}
-async function chooseFolder(){if(!directorySupported){toast('Trình duyệt này sẽ dùng thư mục Tải xuống. Chrome/Edge hỗ trợ chọn thư mục và lưu hàng loạt trực tiếp.');return null;}
-  try{state.folder=await window.showDirectoryPicker({id:'tiktok-saver',mode:'readwrite'});await write('folder',state.folder);elements.folderName.textContent=state.folder.name;status('Đã chọn nơi lưu. Video sẽ được chia vào thư mục theo tên tài khoản.');return state.folder;}catch(error){if(error.name!=='AbortError')status('Chưa mở được thư mục. Hãy thử chọn một thư mục khác.');return null;}}
-function showOverall(job){const s=summarize(job);elements.progress.value=s.total?s.done*100/s.total:0;elements.overall.textContent=`${directorySupported?'Đã lưu':'Đã gửi tải'} ${s.done}/${s.total} video${s.failed?` · ${s.failed} chưa tải được`:''}`;}
+async function chooseFolder(){if(!directorySupported)return;
+  try{const folder=await window.showDirectoryPicker({id:'tiktok-saver',mode:'readwrite'});setFolder(folder);status('Đã chọn thư mục. Video sẽ được lưu thẳng vào đây khi trình duyệt cho phép.');}
+  catch(error){if(error.name!=='AbortError'){setFolder(null);status('Chưa chọn được thư mục riêng. Video vẫn có thể tải về mục Tải xuống.');toast('Không chọn được thư mục. Bạn vẫn có thể tải về mục Tải xuống bình thường.');log('Chọn thư mục bị từ chối hoặc trình duyệt không hỗ trợ: '+error.message);}}}
+function showOverall(job){const s=summarize(job);const sent=job.filter(item=>item.status==='sent').length;const saved=s.done-sent;elements.progress.value=s.total?s.done*100/s.total:0;elements.overall.textContent=(sent?`Đã lưu ${saved}/${s.total} · Đã gửi ${sent}/${s.total} vào mục Tải xuống`:`Đã lưu ${saved}/${s.total} video`)+(s.failed?` · ${s.failed} chưa tải được`:'');}
 async function existingReceipt(directory,video){
   const key=`receipt:${videoKey(video)}:${state.folder.name}`;const receipt=await read(key);if(!receipt)return null;
   try{const file=await(await directory.getFileHandle(receipt.filename)).getFile();if(file.size!==receipt.size||await hashFile(file)!==receipt.sha256)return null;await verifyMP4(file);return receipt;}catch{return null;}
 }
 async function downloadOne(video,signal){
-  let directory=null;if(state.folder)directory=await state.folder.getDirectoryHandle(safeFolder(video.username),{create:true});
+  const directory=state.folder;
   if(directory){const existing=await existingReceipt(directory,video);if(existing){log(`Bỏ qua video đã có và kiểm tra hợp lệ: ${video.id}.`);return 'done';}}
   const response=await fetch('/api/download?url='+encodeURIComponent(video.url),{signal});
   if(!response.ok){const info=await response.json().catch(()=>({}));throw new Error(info.error||'Chưa tải được video này.');}
@@ -112,10 +114,11 @@ async function downloadOne(video,signal){
   }catch(error){await reader.cancel().catch(()=>{});if(writer)await writer.abort().catch(()=>{});throw error;}finally{reader.releaseLock();}
 }
 async function download(resume=false){if(state.busy)return;
-  // Permission requests happen directly in this click handler, before network work.
-  if(directorySupported){if(!state.folder){if(!await chooseFolder())return;}else if(await state.folder.requestPermission({mode:'readwrite'})!=='granted'){status('Hãy cho phép ghi vào thư mục hoặc chọn nơi lưu khác.');return;}}
+  // A custom folder is optional. If the browser declines access, continue with its normal Downloads location.
+  if(state.folder){let permission='prompt';try{permission=await state.folder.queryPermission({mode:'readwrite'});if(permission!=='granted')permission=await state.folder.requestPermission({mode:'readwrite'});}catch(error){log('Không xác nhận được quyền thư mục: '+error.message);}
+    if(permission!=='granted'){setFolder(null);status('Trình duyệt chưa cho phép ghi vào thư mục đã chọn. Lượt tải này sẽ dùng mục Tải xuống.');log('Chuyển sang mục Tải xuống của trình duyệt thay vì dừng lượt tải.');await write('folder',null).catch(()=>{});}}
   if(!resume)state.job=mergeQueue(state.job,[...state.selected.values()]);if(!state.job.length){toast('Chưa có video nào cần tải.');return;}
-  state.job=state.job.map(item=>({...item,status:'pending'}));await save();const signal=startOperation('download');let paused=false;
+  state.job=state.job.map(item=>['done','sent'].includes(item.status)?item:{...item,status:'pending'});await save();const signal=startOperation('download');let paused=false;
   try{for(let index=0;index<state.job.length;index++){
     if(signal.aborted){paused=true;break;}const item=state.job[index];showOverall(state.job);status(`Đang xử lý video ${index+1}/${state.job.length} — ${(item.video.title||'Video chưa có chú thích').slice(0,75)}`);elements.current.textContent='Đang lấy bản chất lượng cao hoặc kiểm tra video đã có…';
     try{item.status=await downloadOne(item.video,signal);item.error=null;}catch(error){if(signal.aborted||error.name==='AbortError'){item.status='pending';paused=true;break;}item.status='failed';item.error=errorMessage(error);log(`Chưa tải được ${item.video.id}: ${item.error}`);}
@@ -124,7 +127,7 @@ async function download(resume=false){if(state.busy)return;
   const summary=summarize(state.job);showOverall(state.job);
   if(paused){status(`Đã tạm dừng. ${summary.done}/${summary.total} video đã hoàn tất. Bấm Tiếp tục tải để làm tiếp.`);}
   else if(summary.failed){status(`Đã hoàn tất ${summary.done}/${summary.total} video. Còn ${summary.failed} video chưa tải được; bấm Tiếp tục tải để thử lại.`);}
-  else{status(directorySupported?`Đã lưu xong ${summary.done} video. Bạn có thể mở thư mục đã chọn để xem.`:`Đã gửi ${summary.done} video cho trình duyệt tải. Hãy kiểm tra mục Tải xuống và cho phép tải nhiều file nếu được hỏi.`);state.job=[];}
+  else{const sent=state.job.filter(item=>item.status==='sent').length;const saved=summary.done-sent;status(sent?`Đã gửi ${sent} video vào mục Tải xuống của trình duyệt${saved?` và lưu ${saved} video vào thư mục đã chọn`:''}. Nhấn Ctrl+J để xem danh sách tải.`:`Đã lưu xong ${saved} video thẳng vào thư mục ${state.folder?.name||'đã chọn'}.`);state.job=[];}
   elements.current.textContent=paused?'Tiến độ đã được nhớ tự động':summary.failed?'Các video lỗi chưa được tính là hoàn tất':'Hoàn tất';await save();
   }catch(error){status(errorMessage(error));log(errorMessage(error));await save();}finally{finishOperation();}}
 $('search-form').addEventListener('submit',find);elements.next.addEventListener('click',next);elements.previous.addEventListener('click',()=>{if(state.page>0&&!state.busy){state.page--;render();scheduleSave();}});
@@ -133,7 +136,7 @@ elements.paste.addEventListener('click',async()=>{try{elements.url.value=await n
 window.addEventListener('beforeunload',event=>{if(state.busy){event.preventDefault();event.returnValue='';}});
 async function initialize(){
   try{db=await openDB();const saved=await read('state');if(saved){state.pages=saved.pages||[];state.page=Math.min(saved.page||0,Math.max(0,state.pages.length-1));state.username=saved.username||'';state.type=saved.type||'';state.selected=new Map((saved.selected||[]).map(video=>[videoKey(video),video]));state.job=saved.job||[];elements.url.value=saved.url||'';}
-    if(directorySupported){state.folder=await read('folder');if(state.folder)elements.folderName.textContent=state.folder.name;}else{elements.folderName.textContent='thư mục Tải xuống của trình duyệt';elements.folder.textContent='Về nơi lưu';}
+    setFolder(null);if(!directorySupported)elements.folder.hidden=true;else elements.folder.textContent='Chọn thư mục khác (tùy chọn)';
     if(state.job.length){showOverall(state.job);status(`Có lượt tải ${state.job.length} video chưa hoàn tất. Bấm Tiếp tục tải để làm tiếp.`);}
   }catch(error){log(error.message);status('Chế độ riêng tư: tiến độ có thể không được giữ khi đóng tab.');}
   render();
